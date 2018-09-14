@@ -87,12 +87,10 @@ with tf.variable_scope('softmax'):
     w = tf.get_variable('w', [state_size, num_classes])
     b = tf.get_variable('b', [num_classes])
 logits = [tf.matmul(rnn_output, w) + b for rnn_output in rnn_outputs]
-predictions = [tf.nn.softmax(logit) for logit in logits]
 
 # 计算loss
 y_as_list = tf.unstack(y, num=num_steps, axis=1)
-losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label, logits=logit) for\
-          logit, label in zip(logits, y_as_list)]
+losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_as_list, logits=logits)# 注意这里logit输入之前不能加softmax层
 total_loss = tf.reduce_mean(losses)
 
 # 方便后面训练网络
@@ -120,7 +118,7 @@ def train_rnn(num_epochs, num_steps, state_size=4, verbose=True):
     return training_losses
 
 start_time = time.time()
-training_losses = train_rnn(num_epochs=20, num_steps=num_steps, state_size=state_size)
+training_losses = train_rnn(num_epochs=5, num_steps=num_steps, state_size=state_size)
 print('训练耗时： ', time.time()-start_time)
 print(training_losses[0])
 plt.plot(training_losses)
