@@ -46,11 +46,6 @@ def gen_epochs(num_epochs, num_steps, batch_size):
     for i in range(num_epochs):
         yield ptb_iterator(data, batch_size, num_steps)
 
-def reset_graph():
-    if 'sess' in globals() and sess:
-        sess.close()
-    tf.reset_default_graph()
-
 
 def build_basic_rnn_graph_with_list(
         state_size = state_size,
@@ -60,7 +55,7 @@ def build_basic_rnn_graph_with_list(
         learning_rate = learning_rate,
         keep_prob = keep_prob
 ):
-    reset_graph()
+    tf.reset_default_graph()
     x = tf.placeholder(tf.int32, [batch_size, num_steps], name='x')
     y = tf.placeholder(tf.int32, [batch_size, num_steps], name='y')
 
@@ -105,7 +100,7 @@ def build_multilayer_lstm_graph_with_static_rnn(
         learning_rate=learning_rate,
         keep_prob=keep_prob
 ):
-    reset_graph()
+    tf.reset_default_graph()
     x = tf.placeholder(tf.int32, [batch_size, num_steps], name='x')
     y = tf.placeholder(tf.int32, [batch_size, num_steps], name='y')
 
@@ -151,7 +146,7 @@ def build_multilayer_lstm_graph_with_dynamic_rnn(
         learning_rate=learning_rate,
         keep_prob=keep_prob
 ):
-    reset_graph()
+    tf.reset_default_graph()
     x = tf.placeholder(tf.int32, [batch_size, num_steps], name='x')
     y = tf.placeholder(tf.int32, [batch_size, num_steps], name='y')
 
@@ -205,7 +200,7 @@ def build_multilayer_lstm_graph_with_scan(
         learning_rate=learning_rate,
         keep_prob=keep_prob
 ):
-    reset_graph()
+    tf.reset_default_graph()
     x = tf.placeholder(tf.int32, [batch_size, num_steps], name='x')
     y = tf.placeholder(tf.int32, [batch_size, num_steps], name='y')
 
@@ -294,7 +289,7 @@ def build_multilayer_lnlstm_graph_with_dynamic_rnn(
         learning_rate=learning_rate,
         keep_probs=[1.0, 1.0]
 ):
-    reset_graph()
+    tf.reset_default_graph()
     x = tf.placeholder(tf.int32, [batch_size, num_steps], name='x')
     y = tf.placeholder(tf.int32, [batch_size, num_steps], name='y')
     embeddings = tf.get_variable('embedding_matrix', [num_classes, state_size])
@@ -303,7 +298,7 @@ def build_multilayer_lnlstm_graph_with_dynamic_rnn(
         cell = tf.nn.rnn_cell.GRUCell(state_size)
     elif cell_type == 'LSTM':
         cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
-    elif cell_type == 'LN_LSTM':
+    elif cell_type == 'LNLSTM':
         cell = LayerNormalizedLSTMCell(state_size)
     elif cell_type == 'BasicRNN':
         cell = tf.nn.rnn_cell.BasicRNNCell(state_size)
@@ -313,9 +308,39 @@ def build_multilayer_lnlstm_graph_with_dynamic_rnn(
     if num_layers != 1:
         cell = tf.nn.rnn_cell.MultiRNNCell(cells=[cell]*num_layers, state_is_tuple=True)
     cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=keep_probs[1])
-
+    '''
+    LSTMCell: (state_is_tuple=True情况下)
+              输入输出：cell(input, state) -> (output, new_state)
+              input为一个时间步长的input， state为c_state和m_state组成的tuple
+              input.shape==(batch_size, input_size),
+              state.shape==((batch_size, state_size), (batch_size, state_size))
+              output为一个时间步长的output，new_state为新的c_state和m_state组成的tuple
+              output.shape==(batch_size, state_size),
+              new_state.shape==((batch_size, state_size), (batch_size, state_size))
+              因此cell总的输出为((batch_size, state_size), ((batch_size, state_size), (batch_size, state_size)))
+    MultiRNNCell: (cell=LSTMCell, state_is_tuple=True情况下)
+              输入输出：cell(input, state) -> (output, new_state)
+              input为第一层一个时间步长的input， state为每一层 c_state和m_state组成的tuple 组成的tuple
+              input.shape==(batch_size, input_size),
+              state.shape==(layer0((batch_size, state_size0), (batch_size, state_size0)), layer1((batch_size, state_size1), (batch_size, state_size1)), ...)
+              output为最后一层一个时间步长的output，new_state为每一层 新的c_state和m_state组成的tuple 组成的tuple
+              output.shape==(batch_size, state_size_of_last_layer),
+              new_state.shape==(layer0((batch_size, state_size0), (batch_size, state_size0)), layer1((batch_size, state_size1), (batch_size, state_size1)), ...)
+              因此cell总的输出为((batch_size, state_size_of_last_layer),
+              (layer0((batch_size, state_size0), (batch_size, state_size0)), layer1((batch_size, state_size1), (batch_size, state_size1)), ...))
+    补充一下，LSTMCell中cell state和hidden state组成的tuple其实为namedtuple(c=cell_state, h=hidden_state)，在
+    MultiRNNCell中也是一样。
+    '''
     init_state = cell.zero_state(batch_size, tf.float32)
     rnn_outputs, final_state = tf.nn.dynamic_rnn(cell, rnn_inputs, initial_state=init_state)
+    '''
+    tf.nn.dynamic_rnn:
+    rnn_inputs: tensor(B, T, I), B = batch_size, T = num_steps, I = input_size
+    final_state: tuple(tuple(c=tensor(B, S), h=tensor(B, S)), ...) of lenth L, L = num_layers, S = state_size
+                 输出最后一个时间步长所有层的cell state和hidden state。
+    rnn_outputs: tensor(B, T, S)
+                 输出所有时间步长的最后一层cell的hidden state。   
+    '''
     with tf.variable_scope('softmax'):
         w = tf.get_variable('w', [state_size, num_classes])
         b = tf.get_variable('b', [num_classes], initializer=tf.constant_initializer(0.0))
@@ -369,6 +394,7 @@ def train_rnn(g, num_epochs, num_steps=num_steps, batch_size=batch_size, verbose
 
 
 def generate_characters(g, save, num_chars, prompt='A', pick_top_chars=None):
+    tf.set_random_seed(2345)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         g['saver'].restore(sess, save)
@@ -397,34 +423,31 @@ def generate_characters(g, save, num_chars, prompt='A', pick_top_chars=None):
         return result
 
 
-# 实验0：生成文本
-num_epochs = 30
-num_layers = 1
-cell_type = 'LN_LSTM'
-# 构建图
-g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type=cell_type, num_layers=num_layers,
-                                                   learning_rate=learning_rate, keep_probs=[0.9, 0.9])
-# 训练
-start_time = time.time()
-losses = train_rnn(g=g, num_epochs=num_epochs,
-                   save='saves/{0}_{1}layers_{2}epochs'.format(cell_type, num_layers, num_epochs))
-print("训练耗时：", time.time()-start_time)
-print('last loss: ', losses[-1])
-# 生成文本
-g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type=cell_type, num_layers=num_layers, num_steps=1,
-                                                   batch_size=1, learning_rate=learning_rate, keep_probs=[0.9, 0.9])
-text = generate_characters(g=g, save='saves/{0}_{1}layers_{2}epochs'.format(cell_type, num_layers, num_epochs),
-                           num_chars=750, prompt='A', pick_top_chars=1)
-file_name_output = 'output_{0}_{1}layers_{2}epochs.txt'.format(cell_type, num_layers, num_epochs)
-with open(file_name_output, 'w') as f:
-    f.write(text)
-print(text)
-# # 实验结果：生成文本毫无逻辑。
+# # 实验0：生成文本
+# num_epochs = 50
+# num_layers = 1
+# cell_type = 'LNLSTM'
+# # 构建图
+# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type=cell_type, num_layers=num_layers,
+#                                                    learning_rate=learning_rate, keep_probs=[0.9, 0.9])
+# # 训练
+# start_time = time.time()
+# losses = train_rnn(g=g, num_epochs=num_epochs,
+#                    save='saves/{0}_{1}layers_{2}epochs'.format(cell_type, num_layers, num_epochs))
+# print("训练耗时：", time.time()-start_time)
+# print('last loss: ', losses[-1])
+# # 生成文本
+# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type=cell_type, num_layers=num_layers, num_steps=1,
+#                                                    batch_size=1, learning_rate=learning_rate, keep_probs=[1, 1])
+# text = generate_characters(g=g, save='saves/{0}_{1}layers_{2}epochs'.format(cell_type, num_layers, num_epochs),
+#                            num_chars=750, prompt='A', pick_top_chars=1)
+# file_name_output = 'output_{0}_{1}layers_{2}epochs.txt'.format(cell_type, num_layers, num_epochs)
+# with open(file_name_output, 'w') as f:
+#     f.write(text)
 
 
-#
 # # 实验1：对比static, dynamic, scan()的训练速度和效果
-# num_epochs = 1
+# num_epochs = 50
 # num_layers = 3
 #
 # g = build_multilayer_lstm_graph_with_scan(num_layers=num_layers, keep_prob=0.9, learning_rate=learning_rate)
@@ -453,62 +476,62 @@ print(text)
 # plt.legend()
 # plt.xlabel('epoch')
 # plt.ylabel('loss')
-# plt.savefig('构建计算图方式对比_{0}层{1}epochs.png'.format(num_layers, num_epochs))
-# plt.show()
+# plt.savefig('figs/构建计算图方式对比_{0}层{1}epochs.png'.format(num_layers, num_epochs))
+# # plt.show()
 # # # 实验结果：lstm_with_scan在1个epoch之后loss几乎不再下降，lstm_with_static_rnn在state_size==512,num_layers==3时内存溢出，
 # # #         改为state_size==100后正常训练。也就是能够正常使用的只有lstm_with_dynamic_rnn。
 #
 #
-# # 实验2：分析dropout, layer normalization的训练速度和效果
-# num_epochs=1
-# num_layers=3
-# keep_probs = [0.9, 0.9]
-#
-# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(num_layers=num_layers, learning_rate=learning_rate)
-# start_time = time.time()
-# losses_basic = train_rnn(g=g, num_epochs=num_epochs)
-# duration_basic = time.time()-start_time
-# print("BasicRNN训练耗时：", duration_basic)
-#
-# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LSTM', num_layers=num_layers,
-#                                                    learning_rate=learning_rate)
-# start_time = time.time()
-# losses_lstm = train_rnn(g=g, num_epochs=num_epochs)
-# duration_lstm = time.time()-start_time
-# print("LSTM训练耗时：", duration_lstm)
-#
-# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LN_LSTM', num_layers=num_layers,
-#                                                    learning_rate=learning_rate)
-# start_time = time.time()
-# losses_lnlstm = train_rnn(g=g, num_epochs=num_epochs)
-# duration_lnlstm = time.time()-start_time
-# print("LN_LSTM训练耗时：", duration_lnlstm)
-#
-# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(num_layers=num_layers,
-#                                                    learning_rate=learning_rate, keep_probs=keep_probs)
-# start_time = time.time()
-# losses_dropoutlstm = train_rnn(g=g, num_epochs=num_epochs)
-# duration_dropoutlstm = time.time()-start_time
-# print("Dropout_LSTM训练耗时：", duration_dropoutlstm)
-#
-# g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LN_LSTM', num_layers=num_layers,
-#                                                    learning_rate=learning_rate, keep_probs=keep_probs)
-# start_time = time.time()
-# losses_dropoutlnlstm = train_rnn(g=g, num_epochs=num_epochs)
-# duration_dropoutlnlstm = time.time()-start_time
-# print("Dropout_LN_LSTM训练耗时：", duration_dropoutlnlstm)
-#
-#
-# plt.title('loss curves of basicRNN, LSTM, LN_LSTM, Dropout_LSTM, Dropout_LN_LSTM')
-# plt.plot(losses_basic, color='green', label='losses_basic({}s)'.format(duration_basic))
-# plt.plot(losses_lstm, color='red', label='losses_lstm({}s)'.format(duration_lstm))
-# plt.plot(losses_lnlstm, color='blue', label='losses_lnlstm({}s)'.format(duration_lnlstm))
-# plt.plot(losses_dropoutlstm, color='yellow', label='losses_dropoutlstm({}s)'.format(duration_dropoutlstm))
-# plt.plot(losses_dropoutlnlstm, color='cyan', label='losses_dropoutlnlstm({}s)'.format(duration_dropoutlnlstm))
-# plt.legend()
-# plt.xlabel('epoch')
-# plt.ylabel('loss')
-# plt.savefig('网络结构对比_{0}层{1}epochs.png'.format(num_layers, num_epochs))
+# 实验2：分析dropout, layer normalization的训练速度和效果
+num_epochs = 50
+num_layers = 3
+keep_probs = [0.9, 0.9]
+
+g = build_multilayer_lnlstm_graph_with_dynamic_rnn(num_layers=num_layers, learning_rate=learning_rate)
+start_time = time.time()
+losses_basic = train_rnn(g=g, num_epochs=num_epochs)
+duration_basic = time.time()-start_time
+print("BasicRNN训练耗时：", duration_basic)
+
+g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LSTM', num_layers=num_layers,
+                                                   learning_rate=learning_rate)
+start_time = time.time()
+losses_lstm = train_rnn(g=g, num_epochs=num_epochs)
+duration_lstm = time.time()-start_time
+print("LSTM训练耗时：", duration_lstm)
+
+g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LN_LSTM', num_layers=num_layers,
+                                                   learning_rate=learning_rate)
+start_time = time.time()
+losses_lnlstm = train_rnn(g=g, num_epochs=num_epochs)
+duration_lnlstm = time.time()-start_time
+print("LNLSTM训练耗时：", duration_lnlstm)
+
+g = build_multilayer_lnlstm_graph_with_dynamic_rnn(num_layers=num_layers,
+                                                   learning_rate=learning_rate, keep_probs=keep_probs)
+start_time = time.time()
+losses_dropoutlstm = train_rnn(g=g, num_epochs=num_epochs)
+duration_dropoutlstm = time.time()-start_time
+print("Dropout_LSTM训练耗时：", duration_dropoutlstm)
+
+g = build_multilayer_lnlstm_graph_with_dynamic_rnn(cell_type='LN_LSTM', num_layers=num_layers,
+                                                   learning_rate=learning_rate, keep_probs=keep_probs)
+start_time = time.time()
+losses_dropoutlnlstm = train_rnn(g=g, num_epochs=num_epochs)
+duration_dropoutlnlstm = time.time()-start_time
+print("Dropout_LNLSTM训练耗时：", duration_dropoutlnlstm)
+
+
+plt.title('loss curves of basicRNN, LSTM, LN_LSTM, Dropout_LSTM, Dropout_LN_LSTM')
+plt.plot(losses_basic, color='green', label='losses_basic({}s)'.format(duration_basic))
+plt.plot(losses_lstm, color='red', label='losses_lstm({}s)'.format(duration_lstm))
+plt.plot(losses_lnlstm, color='blue', label='losses_lnlstm({}s)'.format(duration_lnlstm))
+plt.plot(losses_dropoutlstm, color='yellow', label='losses_dropoutlstm({}s)'.format(duration_dropoutlstm))
+plt.plot(losses_dropoutlnlstm, color='cyan', label='losses_dropoutlnlstm({}s)'.format(duration_dropoutlnlstm))
+plt.legend()
+plt.xlabel('epoch')
+plt.ylabel('loss')
+plt.savefig('figs/网络结构对比_{0}层{1}epochs.png'.format(num_layers, num_epochs))
 # plt.show()
 
 

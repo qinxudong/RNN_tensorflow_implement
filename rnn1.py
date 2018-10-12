@@ -146,10 +146,13 @@ plt.show()
 #   dynamic_rnn的输入为tensor(batch_size, T, num_classes)，输出为tensor(batch_size, T,
 #   state_size)，需要先用tf.unstack转换为[tensor(batch_size, state_size) for t in range(T)]形
 #   的列表，然后遍历计算即可。
-# 3)由于dynamic_rnn可以接受长度不等的序列输入，据说计算效率也更高，因此优先使用dynamic_rnn。
+# 3)由于dynamic_rnn输入为tensor(batch_size, T, num_classes)，输出的rnn_outputs为tensor(batch_size, T, num_classes)。
+#   可以接受长度不等的序列输入，据说计算效率也更高，因此优先使用dynamic_rnn。
 #   但是我统计训练耗时的结果是：5 epochs时，dynamic_rnn用时22.3s，static_rnn用时12.9s，手写rnn用时12.4s
 #                          20 epochs时，dynamic_rnn用时88.8s，static_rnn用时49.1s
 #   可见，这个模型中static_rnn是快于dynamic_rnn的。
+#   更长时间训练的时间对比见rnn2.py。
+# 4)旧版本中的tf.nn.rnn等同于现在的tf.nn.static_rnn。
 
 
 
